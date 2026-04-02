@@ -337,7 +337,7 @@ def root():
         "openapi": "/openapi.json",
     }
 
-@app.post("/search-products", response_model=SearchProductsResponse, tags=["shopping"], openapi_extra={"x-openai-isConsequential": False},)
+@app.post("/search-products", response_model=SearchProductsResponse, tags=["shopping"], openapi_extra={"x-openai-isConsequential": False})
 def search_products(req: SearchProductsRequest):
     q = req.query.lower().strip()
     matches = [
@@ -349,7 +349,7 @@ def search_products(req: SearchProductsRequest):
 
 
 @app.post("/build-setup", response_model=BuildSetupResponse, tags=["shopping"],
-    openapi_extra={"x-openai-isConsequential": False},)
+    openapi_extra={"x-openai-isConsequential": False})
 def build_setup(req: BuildSetupRequest):
     stores = STORE_PRIORITY[:] if req.prefers_same_store else sorted({p.store for p in CATALOG})
 
@@ -368,7 +368,7 @@ def build_setup(req: BuildSetupRequest):
     return best
 
 
-@app.post("/create-cart", tags=["shopping"]openapi_extra={"x-openai-isConsequential": True},)
+@app.post("/create-cart", tags=["shopping"]openapi_extra={"x-openai-isConsequential": True})
 def create_cart(req: BuildSetupRequest):
     # v1 placeholder: build the setup and return a cart intent structure.
     setup = build_setup(req)
