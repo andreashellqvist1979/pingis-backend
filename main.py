@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Pingis Shopping Backend v1",
-    version="0.1.0",
+    version="0.1.1",
     description=(
         "Minimal backend for a shopping GPT that recommends a complete table-tennis setup "
         "and can later be extended with real shop integrations."
@@ -18,7 +18,6 @@ app = FastAPI(
     ],
 )
 
-# For local GPT/action testing. Tighten this later.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -84,13 +83,22 @@ class SetupLine(BaseModel):
     product: Product
 
 
-class BuildSetupResponse(BaseModel):
-    selected_store: str
+class SetupOption(BaseModel):
+    label: str
     lines: List[SetupLine]
     products_total_sek: int
     shipping_total_sek: int
     grand_total_sek: int
     within_budget: bool
+    compromise_notes: List[str] = []
+
+
+class BuildSetupResponse(BaseModel):
+    selected_store: str
+    budget_sek: int
+    best_within_budget: Optional[SetupOption] = None
+    closest_over_budget: Optional[SetupOption] = None
+    budget_compromise: Optional[SetupOption] = None
     summary: str
     next_step: str
 
@@ -106,7 +114,7 @@ class SearchProductsResponse(BaseModel):
 
 
 # -----------------------------
-# Mock catalog (v1)
+# Mock catalog (v1.1)
 # Replace this with real store/API integration later.
 # -----------------------------
 CATALOG: List[Product] = [
@@ -123,6 +131,18 @@ CATALOG: List[Product] = [
         notes="Safe beginner blade with good control.",
     ),
     Product(
+        sku="tt11-blade-donic-waldner-allplay",
+        store="TableTennis11",
+        country="EE",
+        type="blade",
+        brand="Donic",
+        name="Waldner Allplay",
+        price_sek=399,
+        assembled_by_store=True,
+        url="https://tabletennis11.com/",
+        notes="Budget-friendly allround blade.",
+    ),
+    Product(
         sku="tt11-rubber-dhs-neo-hurricane-3",
         store="TableTennis11",
         country="EE",
@@ -137,6 +157,20 @@ CATALOG: List[Product] = [
         notes="Sticky Chinese forehand rubber for spin.",
     ),
     Product(
+        sku="tt11-rubber-friendship-729-super-fx",
+        store="TableTennis11",
+        country="EE",
+        type="rubber",
+        brand="729 Friendship",
+        name="Super FX",
+        price_sek=169,
+        sticky=True,
+        beginner_friendly=True,
+        assembled_by_store=True,
+        url="https://tabletennis11.com/",
+        notes="Cheaper sticky rubber with simpler feel.",
+    ),
+    Product(
         sku="tt11-rubber-xiom-musa",
         store="TableTennis11",
         country="EE",
@@ -149,6 +183,20 @@ CATALOG: List[Product] = [
         assembled_by_store=True,
         url="https://tabletennis11.com/",
         notes="Simple, forgiving backhand rubber.",
+    ),
+    Product(
+        sku="tt11-rubber-yasaka-original-extra-hg",
+        store="TableTennis11",
+        country="EE",
+        type="rubber",
+        brand="Yasaka",
+        name="Original Extra HG",
+        price_sek=199,
+        sticky=False,
+        beginner_friendly=True,
+        assembled_by_store=True,
+        url="https://tabletennis11.com/",
+        notes="Budget backhand rubber.",
     ),
     Product(
         sku="tt11-glue-butterfly-free-chack-ii",
@@ -185,6 +233,18 @@ CATALOG: List[Product] = [
         notes="Another allround beginner blade.",
     ),
     Product(
+        sku="ttshop-blade-andro-kinetic-allround",
+        store="TT-Shop",
+        country="DE",
+        type="blade",
+        brand="Andro",
+        name="Kinetic Allround",
+        price_sek=419,
+        assembled_by_store=True,
+        url="https://www.tt-shop.com/",
+        notes="Affordable allround blade.",
+    ),
+    Product(
         sku="ttshop-rubber-dhs-neo-hurricane-3",
         store="TT-Shop",
         country="DE",
@@ -199,6 +259,20 @@ CATALOG: List[Product] = [
         notes="Sticky forehand rubber.",
     ),
     Product(
+        sku="ttshop-rubber-friendship-729-super-fx",
+        store="TT-Shop",
+        country="DE",
+        type="rubber",
+        brand="729 Friendship",
+        name="Super FX",
+        price_sek=179,
+        sticky=True,
+        beginner_friendly=True,
+        assembled_by_store=True,
+        url="https://www.tt-shop.com/",
+        notes="Budget sticky forehand rubber.",
+    ),
+    Product(
         sku="ttshop-rubber-yasaka-mark-v",
         store="TT-Shop",
         country="DE",
@@ -211,6 +285,20 @@ CATALOG: List[Product] = [
         assembled_by_store=True,
         url="https://www.tt-shop.com/",
         notes="Classic backhand rubber.",
+    ),
+    Product(
+        sku="ttshop-rubber-donic-vario",
+        store="TT-Shop",
+        country="DE",
+        type="rubber",
+        brand="Donic",
+        name="Vario",
+        price_sek=219,
+        sticky=False,
+        beginner_friendly=True,
+        assembled_by_store=True,
+        url="https://www.tt-shop.com/",
+        notes="Budget backhand rubber.",
     ),
     Product(
         sku="ttshop-glue-andro-turbo-fix",
@@ -251,75 +339,230 @@ def _find_products(store: str, ptype: str, sticky: Optional[bool] = None) -> Lis
 
 
 def _shipping_for_store(store: str) -> int:
-    # Very simple v1 logic: one shipping charge per selected store.
     store_items = [p for p in CATALOG if p.store == store]
     return min((p.estimated_shipping_sek for p in store_items), default=79)
 
 
-def _build_from_store(req: BuildSetupRequest, store: str) -> Optional[BuildSetupResponse]:
-    blade_options = _find_products(store, "blade")
-    if not blade_options:
-        return None
+def _pick_first(items: List[Product]) -> Optional[Product]:
+    return items[0] if items else None
 
-    fh_options = _find_products(store, "rubber", sticky=True if req.wants_sticky_rubber else None)
-    if not fh_options and req.wants_sticky_rubber:
-        fh_options = _find_products(store, "rubber")
-    if not fh_options:
-        return None
 
-    bh_options = _find_products(store, "rubber", sticky=False)
-    if req.include_backhand_rubber and not bh_options:
-        bh_options = _find_products(store, "rubber")
-
-    glue_options = _find_products(store, "glue") if req.include_glue else []
-    film_options = _find_products(store, "accessory") if req.include_protect_film else []
-
+def _make_option(
+    *,
+    store: str,
+    req: BuildSetupRequest,
+    label: str,
+    blade: Product,
+    fh: Product,
+    bh: Optional[Product] = None,
+    glue: Optional[Product] = None,
+    film: Optional[Product] = None,
+    compromise_notes: Optional[List[str]] = None,
+) -> SetupOption:
     lines: List[SetupLine] = [
-        SetupLine(slot="blade", product=blade_options[0]),
-        SetupLine(slot="forehand_rubber", product=fh_options[0]),
+        SetupLine(slot="blade", product=blade),
+        SetupLine(slot="forehand_rubber", product=fh),
     ]
 
-    if req.include_backhand_rubber:
-        if not bh_options:
-            return None
-        # Avoid selecting the same rubber object if possible
-        bh_choice = next((p for p in bh_options if p.sku != fh_options[0].sku), bh_options[0])
-        lines.append(SetupLine(slot="backhand_rubber", product=bh_choice))
-
-    if req.include_glue:
-        if not glue_options:
-            return None
-        lines.append(SetupLine(slot="glue", product=glue_options[0]))
-
-    if req.include_protect_film:
-        if not film_options:
-            return None
-        lines.append(SetupLine(slot="protect_film", product=film_options[0]))
+    if bh is not None:
+        lines.append(SetupLine(slot="backhand_rubber", product=bh))
+    if glue is not None:
+        lines.append(SetupLine(slot="glue", product=glue))
+    if film is not None:
+        lines.append(SetupLine(slot="protect_film", product=film))
 
     products_total = sum(line.product.price_sek for line in lines)
     shipping_total = _shipping_for_store(store)
     grand_total = products_total + shipping_total
 
-    summary = (
-        f"Selected {store} because it can cover the setup in one shop. "
-        f"Forehand uses a sticky rubber for spin, and the rest is kept simple and budget-friendly."
-    )
-
-    if req.wants_easy_setup:
-        next_step = (
-            f"Open the store links and choose racket assembly if offered by {store}. "
-            "That avoids doing the gluing yourself the first time."
-        )
-    else:
-        next_step = "Buy the listed products and glue the rubbers to the blade yourself."
-
-    return BuildSetupResponse(
-        selected_store=store,
+    return SetupOption(
+        label=label,
         lines=lines,
         products_total_sek=products_total,
         shipping_total_sek=shipping_total,
         grand_total_sek=grand_total,
         within_budget=grand_total <= req.budget_sek,
+        compromise_notes=compromise_notes or [],
+    )
+
+
+def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOption]:
+    blade_cheapest = _pick_first(_find_products(store, "blade"))
+    fh_sticky_premium = _pick_first(_find_products(store, "rubber", sticky=True))
+    fh_sticky_budget = _pick_first([p for p in _find_products(store, "rubber", sticky=True) if p.price_sek <= 200])
+    bh_standard = _pick_first(_find_products(store, "rubber", sticky=False))
+    bh_budget = _pick_first([p for p in _find_products(store, "rubber", sticky=False) if p.price_sek <= 220]) or bh_standard
+    glue = _pick_first(_find_products(store, "glue"))
+    film = _pick_first(_find_products(store, "accessory"))
+
+    if not blade_cheapest:
+        return []
+
+    # Fallback if no sticky rubber exists in a store.
+    if req.wants_sticky_rubber:
+        fh_default = fh_sticky_premium
+        fh_cheaper = fh_sticky_budget or fh_sticky_premium
+    else:
+        fh_default = _pick_first(_find_products(store, "rubber"))
+        fh_cheaper = fh_default
+
+    if not fh_default:
+        fh_default = _pick_first(_find_products(store, "rubber"))
+        fh_cheaper = fh_default
+
+    if not fh_default:
+        return []
+
+    options: List[SetupOption] = []
+
+    # Full setup
+    if bh_standard is not None:
+        options.append(
+            _make_option(
+                store=store,
+                req=req,
+                label="full_setup",
+                blade=blade_cheapest,
+                fh=fh_default,
+                bh=bh_standard if req.include_backhand_rubber else None,
+                glue=glue if req.include_glue else None,
+                film=film if req.include_protect_film else None,
+                compromise_notes=[],
+            )
+        )
+
+    # Skip glue if store can assemble or user wants easy setup
+    if bh_standard is not None:
+        options.append(
+            _make_option(
+                store=store,
+                req=req,
+                label="no_glue",
+                blade=blade_cheapest,
+                fh=fh_default,
+                bh=bh_standard if req.include_backhand_rubber else None,
+                glue=None,
+                film=film if req.include_protect_film else None,
+                compromise_notes=["Skippa lim och välj montering i butik om det erbjuds."],
+            )
+        )
+
+    # Skip glue and film
+    if bh_standard is not None:
+        options.append(
+            _make_option(
+                store=store,
+                req=req,
+                label="no_glue_no_film",
+                blade=blade_cheapest,
+                fh=fh_default,
+                bh=bh_standard if req.include_backhand_rubber else None,
+                glue=None,
+                film=None,
+                compromise_notes=[
+                    "Skippa lim och välj montering i butik om det erbjuds.",
+                    "Skippa skyddsfilm till att börja med.",
+                ],
+            )
+        )
+
+    # Cheaper forehand rubber
+    if bh_budget is not None and fh_cheaper is not None:
+        options.append(
+            _make_option(
+                store=store,
+                req=req,
+                label="budget_compromise",
+                blade=blade_cheapest,
+                fh=fh_cheaper,
+                bh=bh_budget if req.include_backhand_rubber else None,
+                glue=None,
+                film=None,
+                compromise_notes=[
+                    "Välj billigare forehand-gummi för att klara budgeten.",
+                    "Skippa lim och skyddsfilm till att börja med.",
+                ],
+            )
+        )
+
+    # Absolute minimum: blade + one sticky rubber only
+    options.append(
+        _make_option(
+            store=store,
+            req=req,
+            label="absolute_minimum",
+            blade=blade_cheapest,
+            fh=fh_cheaper,
+            bh=None,
+            glue=None,
+            film=None,
+            compromise_notes=[
+                "Endast ett gummi ingår.",
+                "Detta är billigast möjliga start men inte ett komplett racket med två sidor.",
+            ],
+        )
+    )
+
+    # Remove exact duplicates by label + total.
+    deduped: List[SetupOption] = []
+    seen = set()
+    for option in options:
+        key = (option.label, option.grand_total_sek)
+        if key not in seen:
+            deduped.append(option)
+            seen.add(key)
+    return deduped
+
+
+def _best_response_for_store(req: BuildSetupRequest, store: str) -> Optional[BuildSetupResponse]:
+    candidates = _build_candidate_options(req, store)
+    if not candidates:
+        return None
+
+    within_budget = sorted(
+        [c for c in candidates if c.within_budget],
+        key=lambda c: (c.grand_total_sek, len(c.compromise_notes))
+    )
+    over_budget = sorted(
+        [c for c in candidates if not c.within_budget],
+        key=lambda c: c.grand_total_sek
+    )
+
+    best_within_budget = within_budget[0] if within_budget else None
+    closest_over_budget = over_budget[0] if over_budget else None
+
+    # Prefer an actual compromise option within budget if possible.
+    budget_compromise = None
+    compromise_candidates = [
+        c for c in candidates
+        if c.label in {"budget_compromise", "no_glue", "no_glue_no_film", "absolute_minimum"}
+    ]
+    compromise_candidates = sorted(
+        compromise_candidates,
+        key=lambda c: (not c.within_budget, c.grand_total_sek, len(c.compromise_notes))
+    )
+    if compromise_candidates:
+        budget_compromise = compromise_candidates[0]
+
+    if best_within_budget:
+        summary = (
+            f"Found a setup from {store} within the user's budget. "
+            f"Main recommendation: {best_within_budget.label}."
+        )
+        next_step = "Present the best option first. If relevant, also mention the compromise option."
+    else:
+        summary = (
+            f"No complete ideal setup from {store} fit within budget. "
+            f"Returning the closest over-budget option and a cheaper compromise."
+        )
+        next_step = "Explain that the best full option is over budget and present the compromise clearly."
+
+    return BuildSetupResponse(
+        selected_store=store,
+        budget_sek=req.budget_sek,
+        best_within_budget=best_within_budget,
+        closest_over_budget=closest_over_budget,
+        budget_compromise=budget_compromise,
         summary=summary,
         next_step=next_step,
     )
@@ -337,11 +580,13 @@ def root():
         "openapi": "/openapi.json",
     }
 
-@app.post("/search-products", 
-          response_model=SearchProductsResponse, 
-          tags=["shopping"], 
-          openapi_extra={"x-openai-isConsequential": False},
-         )
+
+@app.post(
+    "/search-products",
+    response_model=SearchProductsResponse,
+    tags=["shopping"],
+    openapi_extra={"x-openai-isConsequential": False},
+)
 def search_products(req: SearchProductsRequest):
     q = req.query.lower().strip()
     matches = [
@@ -352,35 +597,46 @@ def search_products(req: SearchProductsRequest):
     return SearchProductsResponse(matches=matches)
 
 
-@app.post("/build-setup", response_model=BuildSetupResponse, 
-          tags=["shopping"], 
-          openapi_extra={"x-openai-isConsequential": False},
-         )
+@app.post(
+    "/build-setup",
+    response_model=BuildSetupResponse,
+    tags=["shopping"],
+    openapi_extra={"x-openai-isConsequential": False},
+)
 def build_setup(req: BuildSetupRequest):
     stores = STORE_PRIORITY[:] if req.prefers_same_store else sorted({p.store for p in CATALOG})
+    responses: List[BuildSetupResponse] = []
 
-    candidates: List[BuildSetupResponse] = []
     for store in stores:
-        candidate = _build_from_store(req, store)
-        if candidate:
-            candidates.append(candidate)
+        response = _best_response_for_store(req, store)
+        if response:
+            responses.append(response)
 
-    if not candidates:
+    if not responses:
         raise HTTPException(status_code=404, detail="No valid setup found for the request.")
 
-    # Prefer within budget first, then cheapest total.
-    candidates.sort(key=lambda c: (not c.within_budget, c.grand_total_sek))
-    best = candidates[0]
-    return best
+    # Prefer stores with a within-budget option.
+    responses.sort(
+        key=lambda r: (
+            r.best_within_budget is None,
+            r.best_within_budget.grand_total_sek if r.best_within_budget else 10**9,
+            r.closest_over_budget.grand_total_sek if r.closest_over_budget else 10**9,
+        )
+    )
+    return responses[0]
 
 
-@app.post("/create-cart", 
-          tags=["shopping"], 
-          openapi_extra={"x-openai-isConsequential": True},
-         )
+@app.post(
+    "/create-cart",
+    tags=["shopping"],
+    openapi_extra={"x-openai-isConsequential": True},
+)
 def create_cart(req: BuildSetupRequest):
-    # v1 placeholder: build the setup and return a cart intent structure.
-    setup = build_setup(req)
+    response = build_setup(req)
+    chosen_option = response.best_within_budget or response.budget_compromise or response.closest_over_budget
+    if not chosen_option:
+        raise HTTPException(status_code=404, detail="No setup option available for cart creation.")
+
     cart_items = [
         {
             "sku": line.product.sku,
@@ -388,14 +644,15 @@ def create_cart(req: BuildSetupRequest):
             "store": line.product.store,
             "url": line.product.url,
         }
-        for line in setup.lines
+        for line in chosen_option.lines
     ]
     return {
-        "selected_store": setup.selected_store,
+        "selected_store": response.selected_store,
+        "chosen_option_label": chosen_option.label,
         "cart_status": "not_yet_integrated",
-        "message": "Backend v1 returns the chosen items. Replace this with a real shop cart API later.",
+        "message": "Backend v1.1 returns the chosen items. Replace this with a real shop cart API later.",
         "cart_items": cart_items,
-        "estimated_total_sek": setup.grand_total_sek,
+        "estimated_total_sek": chosen_option.grand_total_sek,
     }
 
 
