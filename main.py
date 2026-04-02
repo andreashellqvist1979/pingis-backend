@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Pingis Shopping Backend v1",
-    version="0.1.3",
+    version="0.1.3.1",
     description=(
         "Minimal backend for a shopping GPT that recommends a complete table-tennis setup "
         "and can later be extended with real shop integrations."
@@ -344,6 +344,14 @@ def _pick_first(items: List[Product]) -> Optional[Product]:
     return items[0] if items else None
 
 
+def _store_priority(store: str) -> int:
+    priorities = {
+        "TableTennis11": 0,
+        "TT-Shop": 1,
+    }
+    return priorities.get(store, 99)
+
+
 def _is_complete_option(option: SetupOption) -> bool:
     slots = {line.slot for line in option.lines}
     return "forehand_rubber" in slots and "backhand_rubber" in slots
@@ -369,13 +377,6 @@ def _label_priority(label: str) -> int:
 
 
 def _option_score_within_budget(option: SetupOption) -> tuple:
-    """
-    Lägre tuple = bättre val.
-    Mål:
-    - kompletta rack först
-    - bättre label först
-    - utnyttja budgeten bättre inom rimlighet
-    """
     return (
         not _is_complete_option(option),
         _label_priority(option.label),
@@ -475,7 +476,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
 
     options: List[SetupOption] = []
 
-    # Full setup: komplett med lim + skydd
     if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
@@ -491,7 +491,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             )
         )
 
-    # Komplett utan lim
     if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
@@ -507,7 +506,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             )
         )
 
-    # Komplett utan lim och film
     if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
@@ -526,7 +524,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             )
         )
 
-    # Budget compromise: billigare FH + billigare BH
     if req.include_backhand_rubber and fh_budget is not None and bh_budget is not None:
         options.append(
             _make_option(
@@ -545,7 +542,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             )
         )
 
-    # Absolute minimum
     options.append(
         _make_option(
             store=store,
@@ -685,6 +681,7 @@ def build_setup(req: BuildSetupRequest):
     responses.sort(
         key=lambda r: (
             r.best_within_budget is None,
+            _store_priority(r.selected_store),
             _option_score_within_budget(r.best_within_budget) if r.best_within_budget else (True, 99, 999999, 0, 0),
             _option_score_over_budget(r.closest_over_budget) if r.closest_over_budget else (True, 99, 999999),
         )
@@ -716,7 +713,7 @@ def create_cart(req: BuildSetupRequest):
         "selected_store": response.selected_store,
         "chosen_option_label": chosen_option.label,
         "cart_status": "not_yet_integrated",
-        "message": "Backend v1.3 returns the chosen items. Replace this with a real shop cart API later.",
+        "message": "Backend v1.3.1 returns the chosen items. Replace this with a real shop cart API later.",
         "cart_items": cart_items,
         "estimated_total_sek": chosen_option.grand_total_sek,
     }
