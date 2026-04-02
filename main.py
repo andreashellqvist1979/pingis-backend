@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Pingis Shopping Backend v1",
-    version="0.1.2",
+    version="0.1.3",
     description=(
         "Minimal backend for a shopping GPT that recommends a complete table-tennis setup "
         "and can later be extended with real shop integrations."
@@ -337,7 +337,6 @@ def _find_products(store: str, ptype: str, sticky: Optional[bool] = None) -> Lis
 
 
 def _shipping_for_store(store: str) -> int:
-    # Enkel, stabil modell för v1.2
     return 79
 
 
@@ -348,6 +347,50 @@ def _pick_first(items: List[Product]) -> Optional[Product]:
 def _is_complete_option(option: SetupOption) -> bool:
     slots = {line.slot for line in option.lines}
     return "forehand_rubber" in slots and "backhand_rubber" in slots
+
+
+def _has_glue(option: SetupOption) -> bool:
+    return any(line.slot == "glue" for line in option.lines)
+
+
+def _has_film(option: SetupOption) -> bool:
+    return any(line.slot == "protect_film" for line in option.lines)
+
+
+def _label_priority(label: str) -> int:
+    priorities = {
+        "full_setup": 0,
+        "no_glue": 1,
+        "no_glue_no_film": 2,
+        "budget_compromise": 3,
+        "absolute_minimum": 4,
+    }
+    return priorities.get(label, 99)
+
+
+def _option_score_within_budget(option: SetupOption) -> tuple:
+    """
+    Lägre tuple = bättre val.
+    Mål:
+    - kompletta rack först
+    - bättre label först
+    - utnyttja budgeten bättre inom rimlighet
+    """
+    return (
+        not _is_complete_option(option),
+        _label_priority(option.label),
+        -option.products_total_sek,
+        -int(_has_glue(option)),
+        -int(_has_film(option)),
+    )
+
+
+def _option_score_over_budget(option: SetupOption) -> tuple:
+    return (
+        not _is_complete_option(option),
+        _label_priority(option.label),
+        option.grand_total_sek,
+    )
 
 
 def _make_option(
@@ -390,43 +433,50 @@ def _make_option(
 
 
 def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOption]:
-    blade_cheapest = _pick_first(_find_products(store, "blade"))
-
+    blade_options = _find_products(store, "blade")
     sticky_rubbers = _find_products(store, "rubber", sticky=True)
     nonsticky_rubbers = _find_products(store, "rubber", sticky=False)
     all_rubbers = _find_products(store, "rubber")
+    glue = _pick_first(_find_products(store, "glue"))
+    film = _pick_first(_find_products(store, "accessory"))
 
+    blade_cheapest = _pick_first(blade_options)
     if not blade_cheapest:
         return []
 
     if req.wants_sticky_rubber:
         fh_default = _pick_first(sticky_rubbers) or _pick_first(all_rubbers)
-        fh_cheaper = _pick_first([p for p in sticky_rubbers if p.price_sek <= 200]) or fh_default
+        fh_budget = _pick_first([p for p in sticky_rubbers if p.price_sek <= 200]) or fh_default
     else:
         fh_default = _pick_first(all_rubbers)
-        fh_cheaper = fh_default
+        fh_budget = fh_default
 
     if not fh_default:
         return []
 
-    # Viktigt: välj helst annat BH-gummi än FH-gummit
-    bh_standard = next((p for p in nonsticky_rubbers if p.sku != fh_default.sku), None)
-    if bh_standard is None:
-        bh_standard = next((p for p in all_rubbers if p.sku != fh_default.sku), None)
+    def first_different(candidates: List[Product], sku_to_avoid: str) -> Optional[Product]:
+        return next((p for p in candidates if p.sku != sku_to_avoid), None)
 
-    bh_budget = next((p for p in nonsticky_rubbers if p.price_sek <= 220 and p.sku != fh_cheaper.sku), None)
-    if bh_budget is None:
-        bh_budget = next((p for p in nonsticky_rubbers if p.sku != fh_cheaper.sku), None)
-    if bh_budget is None:
-        bh_budget = next((p for p in all_rubbers if p.sku != fh_cheaper.sku), None)
+    bh_default = first_different(nonsticky_rubbers, fh_default.sku)
+    if bh_default is None:
+        bh_default = first_different(all_rubbers, fh_default.sku)
 
-    glue = _pick_first(_find_products(store, "glue"))
-    film = _pick_first(_find_products(store, "accessory"))
+    if fh_budget:
+        bh_budget = first_different(
+            [p for p in nonsticky_rubbers if p.price_sek <= 220],
+            fh_budget.sku,
+        )
+        if bh_budget is None:
+            bh_budget = first_different(nonsticky_rubbers, fh_budget.sku)
+        if bh_budget is None:
+            bh_budget = first_different(all_rubbers, fh_budget.sku)
+    else:
+        bh_budget = bh_default
 
     options: List[SetupOption] = []
 
-    # Full setup
-    if req.include_backhand_rubber and bh_standard is not None:
+    # Full setup: komplett med lim + skydd
+    if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
                 store=store,
@@ -434,15 +484,15 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
                 label="full_setup",
                 blade=blade_cheapest,
                 fh=fh_default,
-                bh=bh_standard,
+                bh=bh_default,
                 glue=glue if req.include_glue else None,
                 film=film if req.include_protect_film else None,
                 compromise_notes=[],
             )
         )
 
-    # No glue
-    if req.include_backhand_rubber and bh_standard is not None:
+    # Komplett utan lim
+    if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
                 store=store,
@@ -450,15 +500,15 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
                 label="no_glue",
                 blade=blade_cheapest,
                 fh=fh_default,
-                bh=bh_standard,
+                bh=bh_default,
                 glue=None,
                 film=film if req.include_protect_film else None,
                 compromise_notes=["Skippa lim och välj montering i butik om det erbjuds."],
             )
         )
 
-    # No glue, no film
-    if req.include_backhand_rubber and bh_standard is not None:
+    # Komplett utan lim och film
+    if req.include_backhand_rubber and bh_default is not None:
         options.append(
             _make_option(
                 store=store,
@@ -466,7 +516,7 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
                 label="no_glue_no_film",
                 blade=blade_cheapest,
                 fh=fh_default,
-                bh=bh_standard,
+                bh=bh_default,
                 glue=None,
                 film=None,
                 compromise_notes=[
@@ -476,15 +526,15 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             )
         )
 
-    # Budget compromise with cheaper forehand
-    if req.include_backhand_rubber and fh_cheaper is not None and bh_budget is not None:
+    # Budget compromise: billigare FH + billigare BH
+    if req.include_backhand_rubber and fh_budget is not None and bh_budget is not None:
         options.append(
             _make_option(
                 store=store,
                 req=req,
                 label="budget_compromise",
                 blade=blade_cheapest,
-                fh=fh_cheaper,
+                fh=fh_budget,
                 bh=bh_budget,
                 glue=None,
                 film=None,
@@ -502,7 +552,7 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
             req=req,
             label="absolute_minimum",
             blade=blade_cheapest,
-            fh=fh_cheaper,
+            fh=fh_budget or fh_default,
             bh=None,
             glue=None,
             film=None,
@@ -516,7 +566,11 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
     deduped: List[SetupOption] = []
     seen = set()
     for option in options:
-        key = (option.label, tuple((line.slot, line.product.sku) for line in option.lines), option.grand_total_sek)
+        key = (
+            option.label,
+            tuple((line.slot, line.product.sku) for line in option.lines),
+            option.grand_total_sek,
+        )
         if key not in seen:
             deduped.append(option)
             seen.add(key)
@@ -531,20 +585,12 @@ def _best_response_for_store(req: BuildSetupRequest, store: str) -> Optional[Bui
 
     within_budget = sorted(
         [c for c in candidates if c.within_budget],
-        key=lambda c: (
-            not _is_complete_option(c),  # kompletta setups först
-            c.label == "absolute_minimum",  # absolute minimum sist
-            c.grand_total_sek,
-            len(c.compromise_notes),
-        ),
+        key=_option_score_within_budget,
     )
 
     over_budget = sorted(
         [c for c in candidates if not c.within_budget],
-        key=lambda c: (
-            not _is_complete_option(c),
-            c.grand_total_sek,
-        ),
+        key=_option_score_over_budget,
     )
 
     best_within_budget = within_budget[0] if within_budget else None
@@ -559,7 +605,7 @@ def _best_response_for_store(req: BuildSetupRequest, store: str) -> Optional[Bui
         key=lambda c: (
             not c.within_budget,
             not _is_complete_option(c),
-            c.label == "absolute_minimum",
+            _label_priority(c.label),
             c.grand_total_sek,
         ),
     )
@@ -570,13 +616,13 @@ def _best_response_for_store(req: BuildSetupRequest, store: str) -> Optional[Bui
             f"Found a setup from {store} within the user's budget. "
             f"Main recommendation: {best_within_budget.label}."
         )
-        next_step = "Present the best option first. If relevant, also mention the compromise option."
+        next_step = "Present the best option first. If relevant, also mention the closest over-budget alternative."
     else:
         summary = (
-            f"No ideal setup from {store} fit within budget. "
+            f"No setup from {store} fit within budget. "
             f"Returning the closest over-budget option and a cheaper compromise."
         )
-        next_step = "Explain that the best full option is over budget and present the compromise clearly."
+        next_step = "Explain clearly that no within-budget setup exists and show the nearest alternative."
 
     return BuildSetupResponse(
         selected_store=store,
@@ -639,9 +685,8 @@ def build_setup(req: BuildSetupRequest):
     responses.sort(
         key=lambda r: (
             r.best_within_budget is None,
-            (not _is_complete_option(r.best_within_budget)) if r.best_within_budget else True,
-            r.best_within_budget.grand_total_sek if r.best_within_budget else 10**9,
-            r.closest_over_budget.grand_total_sek if r.closest_over_budget else 10**9,
+            _option_score_within_budget(r.best_within_budget) if r.best_within_budget else (True, 99, 999999, 0, 0),
+            _option_score_over_budget(r.closest_over_budget) if r.closest_over_budget else (True, 99, 999999),
         )
     )
     return responses[0]
@@ -671,7 +716,7 @@ def create_cart(req: BuildSetupRequest):
         "selected_store": response.selected_store,
         "chosen_option_label": chosen_option.label,
         "cart_status": "not_yet_integrated",
-        "message": "Backend v1.2 returns the chosen items. Replace this with a real shop cart API later.",
+        "message": "Backend v1.3 returns the chosen items. Replace this with a real shop cart API later.",
         "cart_items": cart_items,
         "estimated_total_sek": chosen_option.grand_total_sek,
     }
