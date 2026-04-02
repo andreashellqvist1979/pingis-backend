@@ -5,8 +5,12 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="Pingis Shopping Backend",
-    version="0.1.4.1",
-    description="Shopping backend for a table-tennis GPT.",
+    version="0.1.4.1b",
+    description=(
+        "Shopping backend for a table-tennis GPT. "
+        "Use /build-setup to suggest options. "
+        "Use /create-cart only after the user explicitly approves a chosen option."
+    ),
     servers=[
         {
             "url": "https://pingis-backend.onrender.com",
@@ -46,16 +50,23 @@ class Product(BaseModel):
 
 
 class BuildSetupRequest(BaseModel):
-    budget_sek: int = Field(..., ge=300, le=5000)
-    wants_sticky_rubber: bool = True
-    wants_easy_setup: bool = True
-    prefers_same_store: bool = True
-    skill_level: Literal["beginner", "intermediate"] = "beginner"
-    country: str = "SE"
-    include_backhand_rubber: bool = True
-    include_glue: bool = True
-    include_protect_film: bool = True
-    preference: Literal["budget", "best_value", "premium_within_budget"] = "best_value"
+    budget_sek: int = Field(..., ge=300, le=5000, description="Maximum total budget in SEK.")
+    wants_sticky_rubber: bool = Field(True, description="Prefer sticky/tacky forehand rubber.")
+    wants_easy_setup: bool = Field(True, description="Prefer simpler setup and shop assembly if possible.")
+    prefers_same_store: bool = Field(True, description="Prefer buying everything from one store.")
+    skill_level: Literal["beginner", "intermediate"] = Field("beginner", description="Player skill level.")
+    country: str = Field("SE", description="Delivery country.")
+    include_backhand_rubber: bool = Field(True, description="Include a backhand rubber.")
+    include_glue: bool = Field(True, description="Include glue in the setup if useful.")
+    include_protect_film: bool = Field(True, description="Include protection film if useful.")
+    preference: Literal["budget", "best_value", "premium_within_budget"] = Field(
+        "best_value",
+        description=(
+            "budget = cheapest viable option, "
+            "best_value = best overall option under budget, "
+            "premium_within_budget = use as much of the budget as possible."
+        ),
+    )
 
 
 class SetupLine(BaseModel):
@@ -85,9 +96,9 @@ class BuildSetupResponse(BaseModel):
 
 
 class SearchProductsRequest(BaseModel):
-    query: str
-    store: Optional[str] = None
-    country: str = "SE"
+    query: str = Field(..., description="Free-text query to search products.")
+    store: Optional[str] = Field(None, description="Optional store filter.")
+    country: str = Field("SE", description="Delivery country.")
 
 
 class SearchProductsResponse(BaseModel):
@@ -95,17 +106,26 @@ class SearchProductsResponse(BaseModel):
 
 
 class CreateCartRequest(BaseModel):
-    budget_sek: int = Field(..., ge=300, le=5000)
-    selected_option: Literal["best_within_budget", "closest_over_budget", "budget_compromise"]
-    wants_sticky_rubber: bool = True
-    wants_easy_setup: bool = True
-    prefers_same_store: bool = True
-    skill_level: Literal["beginner", "intermediate"] = "beginner"
-    country: str = "SE"
-    include_backhand_rubber: bool = True
-    include_glue: bool = True
-    include_protect_film: bool = True
-    preference: Literal["budget", "best_value", "premium_within_budget"] = "best_value"
+    budget_sek: int = Field(..., ge=300, le=5000, description="Same budget used when the setup was suggested.")
+    selected_option: Literal["best_within_budget", "closest_over_budget", "budget_compromise"] = Field(
+        ...,
+        description=(
+            "Which option to add to cart. "
+            "Only call this after the user explicitly approves one option."
+        ),
+    )
+    wants_sticky_rubber: bool = Field(True, description="Prefer sticky/tacky forehand rubber.")
+    wants_easy_setup: bool = Field(True, description="Prefer simpler setup and shop assembly if possible.")
+    prefers_same_store: bool = Field(True, description="Prefer buying everything from one store.")
+    skill_level: Literal["beginner", "intermediate"] = Field("beginner", description="Player skill level.")
+    country: str = Field("SE", description="Delivery country.")
+    include_backhand_rubber: bool = Field(True, description="Include a backhand rubber.")
+    include_glue: bool = Field(True, description="Include glue if the chosen option includes it.")
+    include_protect_film: bool = Field(True, description="Include protection film if the chosen option includes it.")
+    preference: Literal["budget", "best_value", "premium_within_budget"] = Field(
+        "best_value",
+        description="Same preference used when the setup was suggested.",
+    )
 
 
 # -----------------------------
@@ -148,7 +168,6 @@ CATALOG: List[Product] = [
         url="https://tabletennis11.com/",
         notes="Higher-quality allround/offensive blade.",
     ),
-
     Product(
         sku="tt11-rubber-friendship-729-super-fx",
         store="TableTennis11",
@@ -233,7 +252,6 @@ CATALOG: List[Product] = [
         url="https://tabletennis11.com/",
         notes="Modern offensive rubber with much more speed and spin.",
     ),
-
     Product(
         sku="tt11-glue-butterfly-free-chack-ii",
         store="TableTennis11",
@@ -256,7 +274,6 @@ CATALOG: List[Product] = [
         url="https://tabletennis11.com/",
         notes="Protects tacky rubber between sessions.",
     ),
-
     Product(
         sku="ttshop-blade-andro-kinetic-allround",
         store="TT-Shop",
@@ -407,7 +424,6 @@ def _has_slot(option: SetupOption, slot: str) -> bool:
 
 
 def _is_complete_racket(option: SetupOption) -> bool:
-    # Komplett racket = trä + FH + BH
     return _has_slot(option, "blade") and _has_slot(option, "forehand_rubber") and _has_slot(option, "backhand_rubber")
 
 
@@ -445,7 +461,6 @@ def _option_score_within_budget(option: SetupOption, budget_sek: int, preference
             -option.products_total_sek,
         )
 
-    # best_value
     return (
         not option.is_complete_racket,
         _label_priority(option.label),
@@ -491,7 +506,7 @@ def _make_option(
     shipping_total = _shipping_for_store(store)
     grand_total = products_total + shipping_total
 
-    temp_option = SetupOption(
+    option = SetupOption(
         label=label,
         lines=lines,
         products_total_sek=products_total,
@@ -501,8 +516,8 @@ def _make_option(
         is_complete_racket=False,
         compromise_notes=compromise_notes or [],
     )
-    temp_option.is_complete_racket = _is_complete_racket(temp_option)
-    return temp_option
+    option.is_complete_racket = _is_complete_racket(option)
+    return option
 
 
 def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOption]:
@@ -555,7 +570,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
                 film=film if req.include_protect_film else None,
             )
         )
-
         options.append(
             _make_option(
                 store=store,
@@ -569,7 +583,6 @@ def _build_candidate_options(req: BuildSetupRequest, store: str) -> List[SetupOp
                 compromise_notes=["Skippa lim och välj montering i butik om det erbjuds."],
             )
         )
-
         options.append(
             _make_option(
                 store=store,
@@ -697,8 +710,8 @@ def _best_response_for_store(req: BuildSetupRequest, store: str) -> Optional[Bui
         best_within_budget=best_within_budget,
         closest_over_budget=closest_over_budget,
         budget_compromise=budget_compromise,
-        summary=f"Found options for {store}.",
-        next_step="Present the best option first and ask if the user wants it added to cart.",
+        summary=f"Suggested options from {store}.",
+        next_step="Show the main option and ask whether the user wants that option added to cart.",
     )
 
 
@@ -744,6 +757,8 @@ def root():
     "/search-products",
     response_model=SearchProductsResponse,
     tags=["shopping"],
+    summary="Search products",
+    description="Search the mock product catalog. Safe read-only action.",
     openapi_extra={"x-openai-isConsequential": False},
 )
 def search_products(req: SearchProductsRequest):
@@ -760,6 +775,12 @@ def search_products(req: SearchProductsRequest):
     "/build-setup",
     response_model=BuildSetupResponse,
     tags=["shopping"],
+    summary="Suggest a table-tennis setup",
+    description=(
+        "Suggest setup options under a given budget. "
+        "Use this for recommendation questions. "
+        "Do not use this to add anything to a cart."
+    ),
     openapi_extra={"x-openai-isConsequential": False},
 )
 def build_setup(req: BuildSetupRequest):
@@ -769,6 +790,12 @@ def build_setup(req: BuildSetupRequest):
 @app.post(
     "/create-cart",
     tags=["shopping"],
+    summary="Prepare cart items for an approved option",
+    description=(
+        "Prepare cart items for one chosen option. "
+        "Only call this after the user explicitly approves an option such as "
+        "'best_within_budget', 'budget_compromise', or 'closest_over_budget'."
+    ),
     openapi_extra={"x-openai-isConsequential": True},
 )
 def create_cart(req: CreateCartRequest):
@@ -786,8 +813,8 @@ def create_cart(req: CreateCartRequest):
     )
 
     result = _build_setup_internal(setup_req)
-
     chosen = getattr(result, req.selected_option, None)
+
     if chosen is None:
         raise HTTPException(status_code=404, detail=f"Option {req.selected_option} not available.")
 
@@ -812,7 +839,12 @@ def create_cart(req: CreateCartRequest):
     }
 
 
-@app.get("/checkout-link/{store}", tags=["shopping"])
+@app.get(
+    "/checkout-link/{store}",
+    tags=["shopping"],
+    summary="Get checkout link for a store",
+    description="Return the store homepage/checkout link. Safe read-only action.",
+)
 def get_checkout_link(store: str):
     normalized = store.lower()
     if normalized == "tabletennis11":
