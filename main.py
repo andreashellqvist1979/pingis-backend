@@ -819,24 +819,20 @@ def create_cart(req: CreateCartRequest):
         raise HTTPException(status_code=404, detail=f"Option {req.selected_option} not available.")
 
     cart_items = [
-        {
-            "sku": line.product.sku,
-            "name": f"{line.product.brand} {line.product.name}",
-            "store": line.product.store,
-            "url": line.product.url,
-        }
-        for line in chosen.lines
+    {
+        "name": f"{line.product.brand} {line.product.name}",
+        "url": line.product.url,
+    }
     ]
 
     return {
-        "selected_store": result.selected_store,
-        "selected_option": req.selected_option,
-        "cart_status": "not_yet_integrated",
-        "message": "Chosen option prepared. Replace this with a real shop cart API later.",
-        "cart_items": cart_items,
-        "estimated_total_sek": chosen.grand_total_sek,
-        "checkout_url": "https://tabletennis11.com/" if result.selected_store == "TableTennis11" else "https://www.tt-shop.com/",
-    }
+    "selected_store": result.selected_store,
+    "selected_option": req.selected_option,
+    "cart_status": "manual_checkout",
+    "message": "Öppna länkarna nedan och lägg produkterna i varukorgen.",
+    "cart_items": cart_items,
+    "estimated_total_sek": chosen.grand_total_sek
+}
 
 
 @app.get(
