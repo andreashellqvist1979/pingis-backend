@@ -10,6 +10,12 @@ app = FastAPI(
         "Minimal backend for a shopping GPT that recommends a complete table-tennis setup "
         "and can later be extended with real shop integrations."
     ),
+    servers=[
+        {
+            "url": "https://pingis-backend.onrender.com",
+            "description": "Production server"
+        }
+    ],
 )
 
 # For local GPT/action testing. Tighten this later.
